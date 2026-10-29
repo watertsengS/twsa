@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台股持股市值計算器</title>
+<style>
+  :root { color-scheme: light; --ink:#172033; --muted:#64748b; --line:#dbe3ee; --blue:#2457c5; --bg:#f4f7fb; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family: system-ui,-apple-system,"Microsoft JhengHei",sans-serif; }
+  main { max-width:1000px; margin:32px auto; padding:0 16px 40px; }
+  h1 { margin:0 0 8px; font-size:clamp(1.5rem,3vw,2.1rem); }
+  .intro { color:var(--muted); margin:0 0 22px; line-height:1.7; }
+  .panel { background:white; border:1px solid var(--line); border-radius:16px; padding:20px; box-shadow:0 8px 24px #1720330a; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+  button { border:0; border-radius:9px; padding:10px 14px; font-weight:650; cursor:pointer; font-size:.95rem; }
+  .primary { background:var(--blue); color:white; }
+  .secondary { background:#eaf0fb; color:#1e3a8a; }
+  .danger { background:#fff0f0; color:#b42318; padding:8px 10px; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; min-width:690px; }
+  th,td { border-bottom:1px solid var(--line); padding:11px 8px; text-align:left; }
+  th { font-size:.88rem; color:var(--muted); font-weight:700; background:#f8fafc; }
+  td.num, th.num { text-align:right; }
+  input { width:100%; min-width:85px; border:1px solid #cbd5e1; border-radius:8px; padding:9px 10px; font:inherit; }
+  input:focus { outline:2px solid #b7ccff; border-color:var(--blue); }
+  .code { max-width:130px; }
+  .shares { max-width:130px; }
+  .price { max-width:150px; text-align:right; }
+  .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:18px; }
+  .metric { border:1px solid var(--line); background:#fbfdff; padding:15px; border-radius:12px; }
+  .metric .label { color:var(--muted); font-size:.88rem; margin-bottom:8px; }
+  .metric .value { font-size:clamp(1.1rem,2.8vw,1.55rem); font-weight:800; overflow-wrap:anywhere; }
+  #status { margin-top:14px; color:var(--muted); line-height:1.6; white-space:pre-line; }
+  .small { font-size:.86rem; color:var(--muted); line-height:1.7; }
+  .stock-value { font-weight:700; }
+  .error { color:#b42318 !important; }
+  @media(max-width:650px) { main { margin-top:20px; } .panel { padding:13px; } .summary { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>台股持股市值計算器</h1>
+  <p class="intro">輸入台股代號與持有張數，查詢行情後自動計算各檔市值及持股總市值。</p>
+  <section class="panel">
+    <div class="toolbar">
+      <button class="secondary" id="addBtn" type="button">＋ 新增股票</button>
+      <button class="primary" id="refreshBtn" type="button">查詢股價並計算</button>
+      <button class="secondary" id="clearBtn" type="button">清空</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>股票代號</th><th class="num">持有張數</th><th class="num">成交價（元）</th>
+          <th class="num">持股市值（元）</th><th>操作</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="summary">
+      <div class="metric"><div class="label">股票檔數</div><div class="value" id="stockCount">0 檔</div></div>
+      <div class="metric"><div class="label">持有總張數</div><div class="value" id="shareCount">0 張</div></div>
+      <div class="metric"><div class="label">持股總市值</div><div class="value" id="totalValue">NT$ 0</div></div>
+    </div>
+    <div id="status" role="status" aria-live="polite">已準備就緒。預設列為範例，可直接修改或新增。</div>
+  </section>
+  <p class="small">
+    計算方式：持股市值＝成交價 × 張數 × 1,000 股。此頁透過 Yahoo Finance 公開行情端點嘗試取得報價；台股代號會依序嘗試上市（.TW）與上櫃（.TWO）。若查價失敗，可在「成交價」欄手動輸入價格再計算。行情可能有延遲，請以券商或交易所報價為準；此工具未計入手續費、交易稅與零股。
+  </p>
+</main>
+<script>
+(() => {
+  const rows = document.getElementById('rows');
+  const status = document.getElementById('status');
+  const fmt = n => Number(n || 0).toLocaleString('zh-TW', { maximumFractionDigits: 2 });
+  const money = n => 'NT$ ' + Number(n || 0).toLocaleString('zh-TW', { maximumFractionDigits: 0 });
+
+  function addRow(code = '', shares = '', price = '') {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input class="code" aria-label="股票代號" inputmode="numeric" maxlength="6" placeholder="例如 2330" value="${escapeAttr(code)}"></td>
+      <td class="num"><input class="shares" aria-label="持有張數" type="number" min="0" step="any" placeholder="例如 2" value="${escapeAttr(shares)}"></td>
+      <td class="num"><input class="price" aria-label="成交價" type="number" min="0" step="any" placeholder="查價後填入" value="${escapeAttr(price)}"></td>
+      <td class="num stock-value">—</td>
+      <td><button class="danger remove" type="button">刪除</button></td>`;
+    rows.appendChild(tr);
+    tr.querySelectorAll('input').forEach(input => input.addEventListener('input', calculate));
+    tr.querySelector('.remove').addEventListener('click', () => { tr.remove(); calculate(); });
+    calculate();
+  }
+  function escapeAttr(v) {
+    return String(v).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  }
+  function calculate() {
+    let total = 0, lots = 0, count = 0;
+    [...rows.querySelectorAll('tr')].forEach(tr => {
+      const code = tr.querySelector('.code').value.trim();
+      const shares = Math.max(0, Number(tr.querySelector('.shares').value) || 0);
+      const p = tr.querySelector('.price').value;
+      const price = p === '' ? null : Math.max(0, Number(p) || 0);
+      const value = price === null ? null : price * shares * 1000;
+      tr.querySelector('.stock-value').textContent = value === null ? '—' : money(value);
+      if (code) count++;
+      lots += shares;
+      if (value !== null) total += value;
+    });
+    document.getElementById('stockCount').textContent = count + ' 檔';
+    document.getElementById('shareCount').textContent = fmt(lots) + ' 張';
+    document.getElementById('totalValue').textContent = money(total);
+  }
+  
+  const proxy = 'https://proxy.cors.dev/';
+  
+  async function getQuote(code) {
+    const clean = code.trim().toUpperCase();
+    if (!/^\d{4,6}$/.test(clean)) throw new Error('請輸入 4 至 6 位數字股票代號');
+    let lastError;
+    for (const suffix of ['.TW', '.TWO']) {
+      try {
+        const targetUrl =
+        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(clean + suffix)}?range=1d&interval=1m`;
+
+        const url = `${proxy}${targetUrl}`;
+        
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('行情服務回應 ' + response.status);
+        const json = await response.json();
+        const result = json?.chart?.result?.[0];
+        const meta = result?.meta;
+        const price = meta?.regularMarketPrice ?? result?.indicators?.quote?.[0]?.close?.filter(v => v != null).at(-1);
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+          const stamp = meta?.regularMarketTime ? new Date(meta.regularMarketTime * 1000) : null;
+          return { price, name: meta?.longName || meta?.shortName || '', time: stamp };
+        }
+        lastError = new Error('找不到此代號的報價');
+      } catch (e) { lastError = e; }
+    }
+    throw lastError || new Error('無法取得行情');
+  }
+  async function refresh() {
+    const trs = [...rows.querySelectorAll('tr')];
+    const targets = trs.filter(tr => tr.querySelector('.code').value.trim());
+    if (!targets.length) {
+      status.textContent = '請先輸入至少一筆股票代號。';
+      status.classList.add('error');
+      return;
+    }
+    const button = document.getElementById('refreshBtn');
+    button.disabled = true;
+    button.textContent = '查詢中…';
+    status.classList.remove('error');
+    const messages = [];
+    let success = 0;
+    for (const tr of targets) {
+      const code = tr.querySelector('.code').value.trim();
+      status.textContent = `正在查詢 ${code}…`;
+      try {
+        const quote = await getQuote(code);
+        tr.querySelector('.price').value = quote.price;
+        success++;
+        const timeText = quote.time && !Number.isNaN(quote.time.getTime()) ? quote.time.toLocaleString('zh-TW') : '時間未提供';
+        messages.push(`${code}: ${quote.name ? quote.name + '，' : ''}${quote.price} 元（行情時間：${timeText}）`);
+      } catch (e) {
+        messages.push(`${code}: 查價失敗（${e.message || '未知錯誤'}）。可手動輸入成交價。`);
+      }
+      calculate();
+    }
+    status.textContent = `查詢完成：成功 ${success}/${targets.length} 檔。\n` + messages.join('\n') +
+      '\n提醒：如果瀏覽器阻擋跨網域請求（CORS），請改用手動價格，或由自己的後端 PHP 代為查詢行情。';
+    if (success < targets.length) status.classList.add('error');
+    button.disabled = false;
+    button.textContent = '查詢股價並計算';
+  }
+  document.getElementById('addBtn').addEventListener('click', () => addRow());
+  document.getElementById('refreshBtn').addEventListener('click', refresh);
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    rows.innerHTML = '';
+    addRow(); addRow(); addRow();
+    status.textContent = '已清空，請輸入股票代號、張數與價格。';
+    status.classList.remove('error');
+  });
+  addRow('2330', '1', '');
+  addRow('2317', '2', '');
+  addRow();
+})();
+</script>
+</body>
+</html>
